@@ -15,7 +15,7 @@ export default function Home() {
       <div className="guidance-box">
         <h3>💡 이용 안내</h3>
         <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1rem', wordBreak: 'keep-all' }}>
-          환영합니다! 상담 신청을 위해 해당되는 역할을 선택해주세요.
+          환영합니다!<br />상담 신청을 위해 해당되는 역할을 선택해주세요.
         </p>
         <ol>
           <li>학생 또는 학부모를 선택하여 인증코드를 입력합니다.</li>
