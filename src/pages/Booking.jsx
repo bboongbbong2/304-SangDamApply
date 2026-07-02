@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { collection, query, where, getDocs, doc, runTransaction, orderBy } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, runTransaction } from 'firebase/firestore';
 import { db } from '../firebase';
-import { CheckCircle2, Calendar as CalendarIcon } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
+import TimeTable from '../components/TimeTable';
 
 export default function Booking() {
   const location = useLocation();
@@ -17,10 +18,10 @@ export default function Booking() {
   
   const [slots, setSlots] = useState([]);
   const [selectedSlot, setSelectedSlot] = useState(null);
-  
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   useEffect(() => {
     if (!role || !teacherUid) {
@@ -44,25 +45,11 @@ export default function Booking() {
     }
   };
 
-  const loadSlots = async (dateStr) => {
-    setLoading(true);
-    try {
-      const q = query(collection(db, 'slots'), where('date', '==', dateStr));
-      const querySnapshot = await getDocs(q);
-      let slotsList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      slotsList.sort((a, b) => a.startTime.localeCompare(b.startTime));
-      setSlots(slotsList);
-    } catch (err) {
-      console.error('Error loading slots:', err);
-    } finally {
-      setLoading(false);
+  const handleSlotClick = (slot) => {
+    if (slot.status === 'available') {
+      setSelectedSlot(slot);
+      setSelectedDate(slot.date);
     }
-  };
-
-  const handleDateSelect = (dateStr) => {
-    setSelectedDate(dateStr);
-    setSelectedSlot(null);
-    loadSlots(dateStr);
   };
 
   const handleSubmit = async (e) => {
@@ -106,7 +93,7 @@ export default function Booking() {
       console.error(err);
       if (err === 'ALREADY_BOOKED') {
         alert('죄송합니다. 다른 사람이 이미 신청한 시간입니다. 다른 시간을 선택해주세요.');
-        loadSlots(selectedDate); // reload slots
+        setRefreshTrigger(prev => prev + 1); // reload table
         setSelectedSlot(null);
       } else {
         alert('신청 중 오류가 발생했습니다. 다시 시도해주세요.');
@@ -136,15 +123,14 @@ export default function Booking() {
   }
 
   return (
-    <div className="card dashboard-container" style={{ maxWidth: '800px' }}>
+    <div className="card dashboard-container" style={{ maxWidth: '1000px' }}>
       <h1 className="card-title">상담 신청</h1>
       
       <div className="guidance-box">
         <h3>💡 신청 방법</h3>
         <ol>
           <li>학생 학번과 이름을 정확히 입력합니다.</li>
-          <li>가능한 <strong>상담 날짜</strong>를 선택합니다.</li>
-          <li>원하는 <strong>상담 시간</strong>을 선택합니다.</li>
+          <li>아래 시간표에서 <strong>원하는 상담 시간</strong>을 선택합니다. (가능한 시간만 선택할 수 있습니다)</li>
           <li>신청하기 버튼을 누르면 신청이 완료됩니다.</li>
         </ol>
       </div>
@@ -182,83 +168,16 @@ export default function Booking() {
           </div>
         </div>
 
-        <div style={{ marginBottom: '1.5rem' }}>
-          <label className="input-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <CalendarIcon size={18} /> 상담 날짜 선택
-          </label>
-          
-          {loading && !selectedDate ? (
-            <div className="loader" style={{ margin: '1rem 0' }}></div>
-          ) : dates.length > 0 ? (
-            <div className="date-list">
-              {dates.map(d => (
-                <div 
-                  key={d.id} 
-                  className={`date-pill ${selectedDate === d.date ? 'active' : ''}`}
-                  onClick={() => handleDateSelect(d.date)}
-                >
-                  {d.date}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="alert alert-info">현재 설정된 상담 가능 날짜가 없습니다.</div>
-          )}
+        <div style={{ marginBottom: '2rem' }}>
+          <label className="input-label">상담 시간표</label>
+          <TimeTable 
+            teacherUid={teacherUid} 
+            userRole={role} 
+            onSlotClick={handleSlotClick}
+            selectedSlotId={selectedSlot?.id}
+            refreshTrigger={refreshTrigger}
+          />
         </div>
-
-        {selectedDate && (
-          <div style={{ marginBottom: '2rem' }}>
-            <label className="input-label">상담 시간 선택</label>
-            
-            <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem', marginBottom: '1rem' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><div style={{ width: '12px', height: '12px', backgroundColor: 'rgba(34, 197, 94, 0.2)', border: '1px solid var(--status-available)', borderRadius: '2px' }}></div> 신청 가능</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><div style={{ width: '12px', height: '12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '2px' }}></div> 불가</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><div style={{ width: '12px', height: '12px', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid var(--status-booked)', borderRadius: '2px' }}></div> 다른 학생 신청</span>
-            </div>
-
-            {loading ? (
-              <div className="loader"></div>
-            ) : (
-              <div className="slot-grid">
-                {slots.map(slot => {
-                  if (slot.status === 'unavailable') {
-                    return (
-                      <div key={slot.id} className="slot-item slot-unavailable">
-                        <span className="slot-time">{slot.startTime} ~ {slot.endTime}</span>
-                        <span className="slot-label">{slot.timeLabel}</span>
-                        <span className="slot-status">불가</span>
-                      </div>
-                    );
-                  }
-                  
-                  if (slot.status === 'booked') {
-                    return (
-                      <div key={slot.id} className="slot-item slot-booked">
-                        <span className="slot-time">{slot.startTime} ~ {slot.endTime}</span>
-                        <span className="slot-label">{slot.timeLabel}</span>
-                        <span className="slot-status">다른 학생</span>
-                      </div>
-                    );
-                  }
-
-                  // Available
-                  const isSelected = selectedSlot?.id === slot.id;
-                  return (
-                    <div 
-                      key={slot.id} 
-                      className={`slot-item slot-available ${isSelected ? 'slot-selected' : ''}`}
-                      onClick={() => setSelectedSlot(slot)}
-                    >
-                      <span className="slot-time">{slot.startTime} ~ {slot.endTime}</span>
-                      <span className="slot-label">{slot.timeLabel}</span>
-                      <span className="slot-status">{isSelected ? '선택됨' : '신청 가능'}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
 
         <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
           <button type="button" className="btn btn-secondary" onClick={() => navigate('/')}>

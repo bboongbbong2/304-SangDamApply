@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, setDoc, getDocs, addDoc, query, where, orderBy, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, getDocs, addDoc, query, where, updateDoc, writeBatch, deleteDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
-import { LogOut, Plus, Trash2, Settings, Calendar as CalendarIcon } from 'lucide-react';
+import { LogOut, Plus, Trash2, Settings, Calendar as CalendarIcon, Table as TableIcon, LayoutGrid } from 'lucide-react';
+import TimeTable from '../components/TimeTable';
 
 const DEFAULT_SLOTS = [
   { label: '아침', start: '08:05', end: '08:20' },
@@ -30,9 +31,9 @@ export default function TeacherDashboard() {
   const [dates, setDates] = useState([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [slots, setSlots] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(null); // Used only for deletion now
   const [loading, setLoading] = useState(true);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   const navigate = useNavigate();
 
@@ -70,33 +71,9 @@ export default function TeacherDashboard() {
       const datesList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       datesList.sort((a, b) => a.date.localeCompare(b.date));
       setDates(datesList);
-      if (datesList.length > 0 && !selectedDate) {
-        setSelectedDate(datesList[0].date);
-        await loadSlots(datesList[0].date);
-      } else if (selectedDate) {
-        await loadSlots(selectedDate);
-      } else {
-        setLoading(false);
-      }
+      setLoading(false);
     } catch (err) {
       console.error('Error loading dates:', err);
-      setLoading(false);
-    }
-  };
-
-  const loadSlots = async (dateStr) => {
-    setLoading(true);
-    try {
-      const q = query(collection(db, 'slots'), where('date', '==', dateStr));
-      const querySnapshot = await getDocs(q);
-      let slotsList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      // Sort by start time manually just in case
-      slotsList.sort((a, b) => a.startTime.localeCompare(b.startTime));
-      setSlots(slotsList);
-    } catch (err) {
-      console.error('Error loading slots:', err);
-    } finally {
       setLoading(false);
     }
   };
@@ -201,7 +178,7 @@ export default function TeacherDashboard() {
             bookedByType: null,
             bookedAt: null
           });
-          await loadSlots(selectedDate);
+          setRefreshTrigger(prev => prev + 1);
         } catch (err) {
           console.error(err);
           alert('예약 취소 실패');
@@ -213,11 +190,75 @@ export default function TeacherDashboard() {
       try {
         const slotRef = doc(db, 'slots', slot.id);
         await updateDoc(slotRef, { status: newStatus });
-        await loadSlots(selectedDate);
+        setRefreshTrigger(prev => prev + 1);
       } catch (err) {
         console.error(err);
         alert('상태 변경 실패');
       }
+    }
+  };
+
+  const handleDeleteDate = async (dateStr, dateId) => {
+    if (!window.confirm(`${dateStr} 날짜를 삭제하시겠습니까? 해당 날짜의 모든 예약이 사라집니다.`)) return;
+
+    try {
+      setLoading(true);
+      
+      // 1. Delete all slots for this date
+      const slotsQ = query(collection(db, 'slots'), where('date', '==', dateStr));
+      const slotsSnap = await getDocs(slotsQ);
+      
+      const batch = writeBatch(db);
+      slotsSnap.docs.forEach(docSnap => {
+        batch.delete(docSnap.ref);
+      });
+      
+      // 2. Delete the date document
+      const dateRef = doc(db, 'consultationDates', dateId);
+      batch.delete(dateRef);
+      
+      await batch.commit();
+      
+      if (selectedDate === dateStr) {
+        setSelectedDate(null);
+      }
+      await loadDates(user.uid);
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error(err);
+      alert('삭제 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteAllDates = async () => {
+    if (!window.confirm(`모든 상담 날짜와 예약 내역을 정말 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다!`)) return;
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      
+      for (const d of dates) {
+        const slotsQ = query(collection(db, 'slots'), where('date', '==', d.date));
+        const slotsSnap = await getDocs(slotsQ);
+        slotsSnap.docs.forEach(docSnap => {
+          batch.delete(docSnap.ref);
+        });
+        const dateRef = doc(db, 'consultationDates', d.id);
+        batch.delete(dateRef);
+      }
+      
+      await batch.commit();
+      setSelectedDate(null);
+      await loadDates(user.uid);
+      setRefreshTrigger(prev => prev + 1);
+      alert('모든 일정이 삭제되었습니다.');
+    } catch (err) {
+      console.error(err);
+      alert('전체 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -300,66 +341,43 @@ export default function TeacherDashboard() {
         </div>
       </div>
 
-      <h3 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>상담 시간표 관리</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <h3 style={{ fontSize: '1.25rem', margin: 0 }}>상담 시간표 관리</h3>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {dates.length > 0 && (
+            <button className="btn btn-outline" style={{ width: 'auto', padding: '0.5rem', color: '#ef4444', borderColor: '#ef4444' }} onClick={handleDeleteAllDates}>
+              <Trash2 size={16} style={{ marginRight: '0.25rem' }} /> 전체 삭제
+            </button>
+          )}
+        </div>
+      </div>
       
       {dates.length > 0 ? (
         <>
-          <div className="date-list">
+          <div className="date-list" style={{ marginBottom: '1rem' }}>
             {dates.map(d => (
-              <div 
-                key={d.id} 
-                className={`date-pill ${selectedDate === d.date ? 'active' : ''}`}
-                onClick={() => {
-                  setSelectedDate(d.date);
-                  loadSlots(d.date);
-                }}
-              >
-                {d.date}
+              <div key={d.id} style={{ position: 'relative' }}>
+                <div 
+                  className="date-pill"
+                  style={{ paddingRight: '2rem', cursor: 'default' }}
+                >
+                  {d.date}
+                </div>
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handleDeleteDate(d.date, d.id); }}
+                  style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             ))}
           </div>
-
-          <div style={{ padding: '1.5rem', border: '1px solid var(--border-color)', borderRadius: '0.5rem', backgroundColor: 'var(--secondary-color)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h4 style={{ margin: 0, fontSize: '1.1rem' }}>{selectedDate} 시간표</h4>
-              <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><div style={{ width: '12px', height: '12px', backgroundColor: 'rgba(34, 197, 94, 0.2)', border: '1px solid var(--status-available)', borderRadius: '2px' }}></div> 가능 (클릭 시 불가로 변경)</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><div style={{ width: '12px', height: '12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '2px' }}></div> 불가 (클릭 시 가능으로 변경)</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><div style={{ width: '12px', height: '12px', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid var(--status-booked)', borderRadius: '2px' }}></div> 신청 완료</span>
-              </div>
-            </div>
-
-            {loading ? (
-              <div style={{ padding: '2rem 0' }}><div className="loader"></div></div>
-            ) : (
-              <div className="slot-grid">
-                {slots.map(slot => {
-                  let slotClass = 'slot-available';
-                  let statusText = '신청 가능';
-                  
-                  if (slot.status === 'unavailable') {
-                    slotClass = 'slot-unavailable';
-                    statusText = '상담 불가';
-                  } else if (slot.status === 'booked') {
-                    slotClass = 'slot-booked';
-                    statusText = `${slot.bookedByStudentName}(${slot.bookedByType === 'student' ? '학생' : '학부모'})`;
-                  }
-
-                  return (
-                    <div 
-                      key={slot.id} 
-                      className={`slot-item ${slotClass}`}
-                      onClick={() => handleSlotClick(slot)}
-                    >
-                      <span className="slot-time">{slot.startTime} ~ {slot.endTime}</span>
-                      <span className="slot-label">{slot.timeLabel}</span>
-                      <span className="slot-status">{statusText}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          <TimeTable 
+            teacherUid={user.uid} 
+            userRole="teacher" 
+            onSlotClick={handleSlotClick} 
+            refreshTrigger={refreshTrigger}
+          />
         </>
       ) : (
         <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)' }}>
